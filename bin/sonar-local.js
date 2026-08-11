@@ -20,8 +20,12 @@ Usage:
   sonar-local --token <token> --properties <path> --sources <dir[,dir...]> [--tests <dir[,dir...]>]
 
 Options:
-  --token <token>        SonarQube/SonarCloud token. Falls back to $SONAR_TOKEN.
+  --token <token>        SonarQube/SonarCloud token. Falls back to $SONAR_TOKEN, which in turn
+                          can come from a .env file — see --env-file.
   --org <org>             SonarCloud organization key. Falls back to $SONAR_ORG.
+  --env-file <path>       Load env vars (SONAR_TOKEN, SONAR_ORG, ...) from a dotenv-format file
+                          before resolving options. Default: .env in the current directory, if
+                          one exists (silently skipped otherwise — this is not an error).
   --host <url>            Server URL. Default: https://sonarcloud.io
   --project <key>         Project key.
   --sources <dirs>        Comma-separated source directories (relative to --base-dir).
@@ -40,6 +44,23 @@ quick read. Exit code reflects the tool's own process exit, not whether issues w
 check the "Analysis detected N issues" log line for that.
 `;
 
+// Loads SONAR_TOKEN/SONAR_ORG/etc. from a dotenv-format file into process.env, using Node's
+// built-in loader (no dependency). --env-file is explicit and must exist; the bare default (.env
+// in cwd) is opportunistic — most invocations won't have one, and that's fine, not an error.
+function loadEnvFile(explicitPath) {
+  try {
+    if (explicitPath) {
+      process.loadEnvFile(explicitPath);
+    } else {
+      process.loadEnvFile();
+    }
+  } catch (error) {
+    if (explicitPath || error.code !== 'ENOENT') {
+      throw new Error(`Failed to load env file "${explicitPath ?? '.env'}": ${error.message}`);
+    }
+  }
+}
+
 async function main() {
   const { values } = parseArgs({
     options: {
@@ -51,6 +72,7 @@ async function main() {
       tests: { type: 'string' },
       'base-dir': { type: 'string' },
       properties: { type: 'string' },
+      'env-file': { type: 'string' },
       help: { type: 'boolean', short: 'h' },
     },
   });
@@ -59,6 +81,8 @@ async function main() {
     process.stdout.write(HELP);
     return 0;
   }
+
+  loadEnvFile(values['env-file']);
 
   const token = values.token ?? process.env.SONAR_TOKEN;
   if (!token) {

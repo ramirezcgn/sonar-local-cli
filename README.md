@@ -47,6 +47,19 @@ npx sonar-local-cli --token <your-token> \
   --tests backend/tests/SomeModule
 ```
 
+### Avoiding a manual `--token`/`$SONAR_TOKEN` every time
+
+Drop a `.env` file (gitignored — never commit a real token) in the current directory:
+
+```
+SONAR_TOKEN=your-token-here
+SONAR_ORG=your-org-key
+```
+
+It's picked up automatically — no flag needed. Point at a different file with `--env-file
+<path>`. Uses Node's built-in env-file loader, no extra dependency; requires Node ≥21.7.0 (still
+marked experimental upstream as of this writing, but functions normally).
+
 `--token` can also be set via `$SONAR_TOKEN`, `--org` via `$SONAR_ORG` — keeps the token out
 of shell history in CI or scripts.
 
