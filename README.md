@@ -80,10 +80,23 @@ Delete `~/.sonar-local-cli` any time to force a clean re-download.
 
 ## Output
 
-Issues print in TeamCity's `##teamcity[inspection ...]` format. Grep for `message=` for a
-quick scan, or pipe through your own parser if you want structured output. The process exit
-code reflects the underlying tool's own exit, not whether issues were found — check the
-`Analysis detected N issues` log line for that.
+By default, prints just the issues found — one line each (severity, `file:line`, rule, message)
+— plus a final count. The underlying engine's own startup/analyzer/rule-documentation logging
+(Java, Spring, TeamCity `##teamcity[...]` service messages) is suppressed.
+
+```
+WARNING       pos/src/components/Foo.tsx:83  [typescript:S9011]  Add an explicit "type" attribute to this button.
+WEAK WARNING  pos/src/components/Foo.tsx:138  [typescript:S6759]  Mark the props of the component as read-only.
+
+2 issue(s), 0 security hotspot(s).
+```
+
+Pass `--verbose`/`-v` to stream the engine's raw output instead — useful for debugging something
+that isn't a lint finding. On a genuine failure (bad config, crash, etc.) the raw output is always
+shown, regardless of `--verbose`, since a filtered issue list isn't useful for debugging a crash.
+
+The process exit code reflects the underlying tool's own exit — a clean run and a run that found
+issues both exit `0`; only a real failure exits non-zero.
 
 ## License
 

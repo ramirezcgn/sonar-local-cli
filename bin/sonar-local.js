@@ -6,6 +6,7 @@ import { parseArgs } from 'node:util';
 import { ensureJar } from '../src/jar.js';
 import { ensureJre } from '../src/jre.js';
 import { resolvePropertiesFile } from '../src/properties.js';
+import { formatInspection, parseInspections, parseSummaryLine } from '../src/teamcity.js';
 
 const HELP = `sonar-local — run real SonarQube/SonarCloud Connected-Mode analysis locally.
 
@@ -37,11 +38,16 @@ Options:
   --base-dir <path>       Project root. Default: current directory.
   --properties <path>     Use an existing sonar-project.properties file instead of
                           --org/--project/--sources/--tests.
+  --verbose, -v           Stream the underlying engine's raw output (Java/Spring/analyzer logs,
+                          full TeamCity service messages) instead of the default filtered
+                          issue list. Use this to debug a failure that isn't a lint finding.
   -h, --help              Show this help.
 
-Output prints in TeamCity ##teamcity[inspection ...] format — grep for "message=" for a
-quick read. Exit code reflects the tool's own process exit, not whether issues were found;
-check the "Analysis detected N issues" log line for that.
+By default, prints just the issues found (one line each: severity, file:line, rule, message)
+plus a final count — the engine's own verbose startup/analyzer logging is suppressed. Exit code
+reflects the tool's own process exit, not whether issues were found — a clean run and a run that
+found issues both exit 0; only a real failure (bad config, crash, etc.) exits non-zero, in which
+case the raw output is shown regardless of --verbose so you have something to debug from.
 `;
 
 // Loads SONAR_TOKEN/SONAR_ORG/etc. from a dotenv-format file into process.env, using Node's
@@ -61,6 +67,61 @@ function loadEnvFile(explicitPath) {
   }
 }
 
+// Runs the engine with stdio inherited — the pre-existing behavior, used for --verbose and as
+// the fallback when a run fails (real errors need the raw log, not a filtered issue list).
+function runVerbose(javaBinary, jarPath, propertiesPath, token) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(javaBinary, ['-jar', jarPath, propertiesPath], {
+      stdio: 'inherit',
+      env: { ...process.env, SONAR_TOKEN: token },
+    });
+    child.on('error', reject);
+    child.on('close', (code) => resolve(code ?? 1));
+  });
+}
+
+// Captures stdout/stderr instead of streaming them, so a successful run can print just the
+// parsed issue list instead of the engine's own startup/analyzer/rule-documentation noise. On a
+// non-zero exit, falls back to dumping the raw captured output — a real failure needs the actual
+// log, not a best-effort issue list parsed out of who-knows-what got printed before it crashed.
+async function runQuiet(javaBinary, jarPath, propertiesPath, token) {
+  const { code, stdout, stderr } = await new Promise((resolve, reject) => {
+    const child = spawn(javaBinary, ['-jar', jarPath, propertiesPath], {
+      stdio: ['inherit', 'pipe', 'pipe'],
+      env: { ...process.env, SONAR_TOKEN: token },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => (stdout += chunk));
+    child.stderr.on('data', (chunk) => (stderr += chunk));
+    child.on('error', reject);
+    child.on('close', (exitCode) => resolve({ code: exitCode ?? 1, stdout, stderr }));
+  });
+
+  if (code !== 0) {
+    process.stderr.write(stdout);
+    process.stderr.write(stderr);
+    process.stderr.write(`\n[sonar-local] Engine exited with code ${code} — see raw output above.\n`);
+    return code;
+  }
+
+  const inspections = parseInspections(stdout);
+  for (const inspection of inspections) {
+    process.stdout.write(formatInspection(inspection) + '\n');
+  }
+
+  const summary = parseSummaryLine(stdout);
+  if (summary) {
+    process.stdout.write(
+      `\n${summary.issues} issue(s), ${summary.securityHotspots} security hotspot(s).\n`,
+    );
+  } else {
+    process.stdout.write(`\n${inspections.length} issue(s).\n`);
+  }
+
+  return code;
+}
+
 async function main() {
   const { values } = parseArgs({
     options: {
@@ -73,6 +134,7 @@ async function main() {
       'base-dir': { type: 'string' },
       properties: { type: 'string' },
       'env-file': { type: 'string' },
+      verbose: { type: 'boolean', short: 'v' },
       help: { type: 'boolean', short: 'h' },
     },
   });
@@ -107,15 +169,9 @@ async function main() {
   });
 
   try {
-    const exitCode = await new Promise((resolve, reject) => {
-      const child = spawn(javaBinary, ['-jar', jarPath, propertiesPath], {
-        stdio: 'inherit',
-        env: { ...process.env, SONAR_TOKEN: token },
-      });
-      child.on('error', reject);
-      child.on('close', (code) => resolve(code ?? 1));
-    });
-    return exitCode;
+    return values.verbose
+      ? await runVerbose(javaBinary, jarPath, propertiesPath, token)
+      : await runQuiet(javaBinary, jarPath, propertiesPath, token);
   } finally {
     await cleanup();
   }
