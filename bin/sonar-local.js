@@ -17,6 +17,7 @@ real quality profile.
 Usage:
   sonar-local --token <token> --org <org> --project <projectKey> --sources <dir[,dir...]> [options]
   sonar-local --token <token> --properties <path/to/sonar-project.properties>
+  sonar-local --token <token> --properties <path> --sources <dir[,dir...]> [--tests <dir[,dir...]>]
 
 Options:
   --token <token>        SonarQube/SonarCloud token. Falls back to $SONAR_TOKEN.
@@ -24,7 +25,10 @@ Options:
   --host <url>            Server URL. Default: https://sonarcloud.io
   --project <key>         Project key.
   --sources <dirs>        Comma-separated source directories (relative to --base-dir).
-                          Must be directories, not individual files.
+                          Must be directories, not individual files. Combined with
+                          --properties, overrides just that file's sonar.sources for this
+                          run (everything else in the file — projectKey, exclusions, etc.
+                          — stays as-is) instead of replacing the whole config.
   --tests <dirs>          Comma-separated test directories, same rule as --sources.
   --base-dir <path>       Project root. Default: current directory.
   --properties <path>     Use an existing sonar-project.properties file instead of

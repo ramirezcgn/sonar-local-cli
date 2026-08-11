@@ -37,6 +37,16 @@ Or reuse an existing `sonar-project.properties`:
 npx sonar-local-cli --token <your-token> --properties ./sonar-project.properties
 ```
 
+Combine `--properties` with `--sources`/`--tests` to narrow just those two settings for a fast,
+scoped run — everything else in the file (projectKey, exclusions, etc.) stays as-is:
+
+```bash
+npx sonar-local-cli --token <your-token> \
+  --properties ./sonar-project.properties \
+  --sources backend/app/SomeModule \
+  --tests backend/tests/SomeModule
+```
+
 `--token` can also be set via `$SONAR_TOKEN`, `--org` via `$SONAR_ORG` — keeps the token out
 of shell history in CI or scripts.
 

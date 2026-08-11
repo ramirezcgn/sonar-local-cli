@@ -1,13 +1,57 @@
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+
+const OVERRIDABLE_KEYS = ['sonar.sources', 'sonar.tests'];
+
+async function tempPropertiesFile(content) {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'sonar-local-cli-'));
+  const filePath = path.join(dir, 'sonar-project.properties');
+  await writeFile(filePath, content);
+
+  return {
+    path: filePath,
+    cleanup: async () => rm(dir, { recursive: true, force: true }),
+  };
+}
+
+// Replaces (or appends) sonar.sources/sonar.tests lines in an existing properties file's content,
+// leaving every other line — including comments and formatting — untouched. Lets --sources/--tests
+// narrow the scope of a full project's tracked properties file for a fast, targeted run without
+// hand-writing a whole separate file each time.
+function applyOverrides(content, overrides) {
+  const lines = content.split('\n');
+  const applied = new Set();
+
+  const result = lines.map((line) => {
+    const match = OVERRIDABLE_KEYS.find((key) => line.trim().startsWith(`${key}=`));
+    if (!match || !(match in overrides)) return line;
+    applied.add(match);
+    return `${match}=${overrides[match]}`;
+  });
+
+  for (const [key, value] of Object.entries(overrides)) {
+    if (!applied.has(key)) result.push(`${key}=${value}`);
+  }
+
+  return result.join('\n');
+}
 
 // Token is deliberately never written here — it's passed to the analysis process as the
 // SONAR_TOKEN env var, which sonarlint-cli reads directly (see Configuration.java: every
 // sonar.* property falls back to an uppercased/underscored env var before the file).
 export async function resolvePropertiesFile(options) {
   if (options.properties) {
-    return { path: options.properties, cleanup: async () => {} };
+    const overrides = {};
+    if (options.sources) overrides['sonar.sources'] = options.sources;
+    if (options.tests) overrides['sonar.tests'] = options.tests;
+
+    if (Object.keys(overrides).length === 0) {
+      return { path: options.properties, cleanup: async () => {} };
+    }
+
+    const original = await readFile(options.properties, 'utf8');
+    return tempPropertiesFile(applyOverrides(original, overrides));
   }
 
   const required = ['org', 'project', 'sources'];
@@ -30,14 +74,5 @@ export async function resolvePropertiesFile(options) {
     lines.push(`sonar.tests=${options.tests}`);
   }
 
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'sonar-local-cli-'));
-  const filePath = path.join(dir, 'sonar-project.properties');
-  await writeFile(filePath, lines.join('\n') + '\n');
-
-  return {
-    path: filePath,
-    cleanup: async () => {
-      await import('node:fs/promises').then(({ rm }) => rm(dir, { recursive: true, force: true }));
-    },
-  };
+  return tempPropertiesFile(lines.join('\n') + '\n');
 }
