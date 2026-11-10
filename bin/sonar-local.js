@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 
@@ -53,7 +54,8 @@ Options:
   --base-dir <path>       Project root. Relative --sources, --tests, --properties and --env-file
                           (default: .env) resolve against it. Default: current directory
                           (standalone with --properties: that file's directory).
-  --properties <path>     Use an existing sonar-project.properties file instead of
+  --properties <path>     Default: sonar-project.properties in --base-dir, if it exists and
+                          --project is not given. Use an existing sonar-project.properties file instead of
                           --org/--project/--sources/--tests.
   --standalone            Force standalone mode even when a token is available.
   --verbose, -v        Stream the underlying engine's raw output (Java/Spring/analyzer logs,
@@ -219,8 +221,13 @@ async function main() {
 
   // --base-dir is also where .env and --properties are looked up (relative paths resolve against it).
   const root = path.resolve(values['base-dir'] ?? '.');
-  if (values.properties)
+  if (values.properties) {
     values.properties = path.resolve(root, values.properties);
+  } else if (!values.project) {
+    // No explicit config: pick up the project's own file from the base dir.
+    const detected = path.join(root, 'sonar-project.properties');
+    if (existsSync(detected)) values.properties = detected;
+  }
   loadEnvFile(
     path.resolve(root, values['env-file'] ?? '.env'),
     Boolean(values['env-file'])
