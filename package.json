@@ -1,6 +1,6 @@
 {
   "name": "sonar-local-cli",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Run real SonarQube/SonarCloud Connected-Mode analysis locally, no Java pre-install, no Docker, no MCP server — auto-downloads a portable JRE and the sonarlint-cli engine on first run.",
   "type": "module",
   "bin": {
@@ -30,6 +30,11 @@
   },
   "author": "",
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "prettier": "^3.9.10"
   }
 }

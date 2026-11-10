@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 const OVERRIDABLE_KEYS = ['sonar.sources', 'sonar.tests'];
+const SCOPE_KEYS = new Set([...OVERRIDABLE_KEYS, 'sonar.projectBaseDir']);
 
 async function tempPropertiesFile(content) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'sonar-local-cli-'));
@@ -24,7 +25,9 @@ function applyOverrides(content, overrides) {
   const applied = new Set();
 
   const result = lines.map((line) => {
-    const match = OVERRIDABLE_KEYS.find((key) => line.trim().startsWith(`${key}=`));
+    const match = OVERRIDABLE_KEYS.find((key) =>
+      line.trim().startsWith(`${key}=`)
+    );
     if (!match || !(match in overrides)) return line;
     applied.add(match);
     return `${match}=${overrides[match]}`;
@@ -35,6 +38,27 @@ function applyOverrides(content, overrides) {
   }
 
   return result.join('\n');
+}
+
+// Standalone mode has no server-side project config, so it reads just the scope keys from the file.
+export async function readScope(propertiesPath) {
+  const props = {};
+  for (const line of (await readFile(propertiesPath, 'utf8')).split(/\r?\n/)) {
+    const eq = line.indexOf('=');
+    if (eq < 0) continue;
+    const key = line.slice(0, eq).trim();
+    if (SCOPE_KEYS.has(key)) props[key] = line.slice(eq + 1).trim();
+  }
+  const split = (value) =>
+    (value ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+  return {
+    baseDir: props['sonar.projectBaseDir'],
+    sources: split(props['sonar.sources']),
+    tests: split(props['sonar.tests']),
+  };
 }
 
 // Token is deliberately never written here — it's passed to the analysis process as the
@@ -59,7 +83,7 @@ export async function resolvePropertiesFile(options) {
   if (missing.length > 0) {
     throw new Error(
       `Missing required option(s): ${missing.map((k) => `--${k}`).join(', ')} ` +
-        '(or pass --properties <file> to use an existing sonar-project.properties instead).',
+        '(or pass --properties <file> to use an existing sonar-project.properties instead).'
     );
   }
 

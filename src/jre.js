@@ -20,7 +20,11 @@ function adoptiumDownloadUrl() {
 }
 
 function jreInstallDir() {
-  return path.join(cacheDir(), 'jre', `${JAVA_FEATURE_VERSION}-${adoptiumOs()}-${adoptiumArch()}`);
+  return path.join(
+    cacheDir(),
+    'jre',
+    `${JAVA_FEATURE_VERSION}-${adoptiumOs()}-${adoptiumArch()}`
+  );
 }
 
 function sentinelPath() {
@@ -57,7 +61,9 @@ async function findJavaBinary(extractedRoot) {
   const entries = await readdir(extractedRoot, { withFileTypes: true });
   const topLevelDir = entries.find((entry) => entry.isDirectory());
   if (!topLevelDir) {
-    throw new Error(`Extracted JRE at ${extractedRoot} has no top-level directory — unexpected archive layout.`);
+    throw new Error(
+      `Extracted JRE at ${extractedRoot} has no top-level directory — unexpected archive layout.`
+    );
   }
   const binaryName = isWindows() ? 'java.exe' : 'java';
   return path.join(extractedRoot, topLevelDir.name, 'bin', binaryName);
@@ -71,7 +77,9 @@ export async function ensureJre({ log = () => {} } = {}) {
     return findJavaBinary(installDir);
   }
 
-  log(`Downloading a portable Java ${JAVA_FEATURE_VERSION} runtime (one-time, ~45MB)...`);
+  log(
+    `Downloading a portable Java ${JAVA_FEATURE_VERSION} runtime (one-time, ~45MB)...`
+  );
   await rm(installDir, { recursive: true, force: true });
   await mkdir(installDir, { recursive: true });
 
@@ -85,7 +93,9 @@ export async function ensureJre({ log = () => {} } = {}) {
 
   const javaBinary = await findJavaBinary(installDir);
   if (!fs.existsSync(javaBinary)) {
-    throw new Error(`Extraction succeeded but no java binary found at ${javaBinary}.`);
+    throw new Error(
+      `Extraction succeeded but no java binary found at ${javaBinary}.`
+    );
   }
   if (!isWindows()) {
     await fs.promises.chmod(javaBinary, 0o755);

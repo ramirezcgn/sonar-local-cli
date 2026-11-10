@@ -1,12 +1,22 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process';
+import path from 'node:path';
 import { parseArgs } from 'node:util';
 
 import { ensureJar } from '../src/jar.js';
 import { ensureJre } from '../src/jre.js';
-import { resolvePropertiesFile } from '../src/properties.js';
-import { formatInspection, parseInspections, parseSummaryLine } from '../src/teamcity.js';
+import { readScope, resolvePropertiesFile } from '../src/properties.js';
+import {
+  analyzeStandalone,
+  collectFiles,
+  ensureStandaloneJars,
+} from '../src/standalone.js';
+import {
+  formatInspection,
+  parseInspections,
+  parseSummaryLine,
+} from '../src/teamcity.js';
 
 const HELP = `sonar-local — run real SonarQube/SonarCloud Connected-Mode analysis locally.
 
@@ -15,7 +25,12 @@ sonarlint-cli analysis engine on first run (cached under ~/.sonar-local-cli afte
 then drives the same engine SonarLint IDE plugins use, synced against your project's
 real quality profile.
 
+Without a token (or with --standalone) it runs standalone:
+default rules, no server. Needs only --sources (default: current directory),
+and --properties is read just for sonar.sources/sonar.tests/sonar.projectBaseDir.
+
 Usage:
+  sonar-local [--sources <dir[,dir...]>]                     (standalone, no token)
   sonar-local --token <token> --org <org> --project <projectKey> --sources <dir[,dir...]> [options]
   sonar-local --token <token> --properties <path/to/sonar-project.properties>
   sonar-local --token <token> --properties <path> --sources <dir[,dir...]> [--tests <dir[,dir...]>]
@@ -35,10 +50,13 @@ Options:
                           run (everything else in the file — projectKey, exclusions, etc.
                           — stays as-is) instead of replacing the whole config.
   --tests <dirs>          Comma-separated test directories, same rule as --sources.
-  --base-dir <path>       Project root. Default: current directory.
+  --base-dir <path>       Project root. Relative --sources, --tests, --properties and --env-file
+                          (default: .env) resolve against it. Default: current directory
+                          (standalone with --properties: that file's directory).
   --properties <path>     Use an existing sonar-project.properties file instead of
                           --org/--project/--sources/--tests.
-  --verbose, -v           Stream the underlying engine's raw output (Java/Spring/analyzer logs,
+  --standalone            Force standalone mode even when a token is available.
+  --verbose, -v        Stream the underlying engine's raw output (Java/Spring/analyzer logs,
                           full TeamCity service messages) instead of the default filtered
                           issue list. Use this to debug a failure that isn't a lint finding.
   -h, --help              Show this help.
@@ -52,17 +70,15 @@ case the raw output is shown regardless of --verbose so you have something to de
 
 // Loads SONAR_TOKEN/SONAR_ORG/etc. from a dotenv-format file into process.env, using Node's
 // built-in loader (no dependency). --env-file is explicit and must exist; the bare default (.env
-// in cwd) is opportunistic — most invocations won't have one, and that's fine, not an error.
-function loadEnvFile(explicitPath) {
+// in the base dir) is opportunistic — most invocations won't have one, and that's fine, not an error.
+function loadEnvFile(filePath, explicit) {
   try {
-    if (explicitPath) {
-      process.loadEnvFile(explicitPath);
-    } else {
-      process.loadEnvFile();
-    }
+    process.loadEnvFile(filePath);
   } catch (error) {
-    if (explicitPath || error.code !== 'ENOENT') {
-      throw new Error(`Failed to load env file "${explicitPath ?? '.env'}": ${error.message}`);
+    if (explicit || error.code !== 'ENOENT') {
+      throw new Error(
+        `Failed to load env file "${filePath}": ${error.message}`
+      );
     }
   }
 }
@@ -95,13 +111,17 @@ async function runQuiet(javaBinary, jarPath, propertiesPath, token) {
     child.stdout.on('data', (chunk) => (stdout += chunk));
     child.stderr.on('data', (chunk) => (stderr += chunk));
     child.on('error', reject);
-    child.on('close', (exitCode) => resolve({ code: exitCode ?? 1, stdout, stderr }));
+    child.on('close', (exitCode) =>
+      resolve({ code: exitCode ?? 1, stdout, stderr })
+    );
   });
 
   if (code !== 0) {
     process.stderr.write(stdout);
     process.stderr.write(stderr);
-    process.stderr.write(`\n[sonar-local] Engine exited with code ${code} — see raw output above.\n`);
+    process.stderr.write(
+      `\n[sonar-local] Engine exited with code ${code} — see raw output above.\n`
+    );
     return code;
   }
 
@@ -113,7 +133,7 @@ async function runQuiet(javaBinary, jarPath, propertiesPath, token) {
   const summary = parseSummaryLine(stdout);
   if (summary) {
     process.stdout.write(
-      `\n${summary.issues} issue(s), ${summary.securityHotspots} security hotspot(s).\n`,
+      `\n${summary.issues} issue(s), ${summary.securityHotspots} security hotspot(s).\n`
     );
   } else {
     process.stdout.write(`\n${inspections.length} issue(s).\n`);
@@ -121,6 +141,58 @@ async function runQuiet(javaBinary, jarPath, propertiesPath, token) {
 
   return code;
 }
+
+// No server connection: default rules only.
+async function runStandaloneMode(values, log) {
+  let baseDir = path.resolve(values['base-dir'] ?? process.cwd());
+  let sources = splitList(values.sources);
+  let tests = splitList(values.tests);
+
+  if (values.properties) {
+    const scope = await readScope(values.properties);
+    if (!values['base-dir']) {
+      const propertiesDir = path.dirname(path.resolve(values.properties));
+      baseDir = path.resolve(propertiesDir, scope.baseDir ?? '.');
+    }
+    if (sources.length === 0) sources = scope.sources;
+    if (tests.length === 0) tests = scope.tests;
+  }
+  if (sources.length === 0) sources = ['.'];
+
+  const files = await collectFiles(baseDir, [...sources, ...tests]);
+  if (files.length === 0) {
+    process.stderr.write(
+      '[sonar-local] No analyzable files found in the given sources.\n'
+    );
+    return 1;
+  }
+
+  log('No token: standalone mode (default rules, no server connection).');
+  const [javaBinary, jars] = await Promise.all([
+    ensureJre({ log }),
+    ensureStandaloneJars({ log }),
+  ]);
+  const { issues, analyzed, total } = await analyzeStandalone({
+    javaBinary,
+    jars,
+    baseDir,
+    files,
+    verbose: values.verbose,
+  });
+
+  for (const issue of issues)
+    process.stdout.write(formatInspection(issue) + '\n');
+  process.stdout.write(
+    `\n${issues.length} issue(s) in ${analyzed}/${total} file(s).\n`
+  );
+  return 0;
+}
+
+const splitList = (value) =>
+  (value ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
 
 async function main() {
   const { values } = parseArgs({
@@ -134,6 +206,7 @@ async function main() {
       'base-dir': { type: 'string' },
       properties: { type: 'string' },
       'env-file': { type: 'string' },
+      standalone: { type: 'boolean' },
       verbose: { type: 'boolean', short: 'v' },
       help: { type: 'boolean', short: 'h' },
     },
@@ -144,19 +217,28 @@ async function main() {
     return 0;
   }
 
-  loadEnvFile(values['env-file']);
+  // --base-dir is also where .env and --properties are looked up (relative paths resolve against it).
+  const root = path.resolve(values['base-dir'] ?? '.');
+  if (values.properties)
+    values.properties = path.resolve(root, values.properties);
+  loadEnvFile(
+    path.resolve(root, values['env-file'] ?? '.env'),
+    Boolean(values['env-file'])
+  );
 
   const token = values.token ?? process.env.SONAR_TOKEN;
-  if (!token) {
-    process.stderr.write('Missing token: pass --token <token> or set $SONAR_TOKEN.\n');
-    return 1;
+  const log = (msg) => process.stderr.write(`[sonar-local] ${msg}\n`);
+
+  if (values.standalone || !token) {
+    return runStandaloneMode(values, log);
   }
 
   const org = values.org ?? process.env.SONAR_ORG;
 
-  const log = (msg) => process.stderr.write(`[sonar-local] ${msg}\n`);
-
-  const [javaBinary, jarPath] = await Promise.all([ensureJre({ log }), ensureJar({ log })]);
+  const [javaBinary, jarPath] = await Promise.all([
+    ensureJre({ log }),
+    ensureJar({ log }),
+  ]);
 
   const { path: propertiesPath, cleanup } = await resolvePropertiesFile({
     properties: values.properties,
@@ -165,7 +247,7 @@ async function main() {
     project: values.project,
     sources: values.sources,
     tests: values.tests,
-    baseDir: values['base-dir'],
+    baseDir: root,
   });
 
   try {

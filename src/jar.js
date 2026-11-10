@@ -4,7 +4,8 @@ import path from 'node:path';
 
 import { cacheDir } from './platform.js';
 
-const RELEASES_API = 'https://api.github.com/repos/pavel-zeman/sonarlint-cli/releases/latest';
+const RELEASES_API =
+  'https://api.github.com/repos/pavel-zeman/sonarlint-cli/releases/latest';
 
 // pavel-zeman/sonarlint-cli (LGPL-3.0) drives the same sonarlint-core/sonarlint-language-server
 // engine SonarLint IDE plugins use, synced against a project's real Connected Mode quality
@@ -16,24 +17,37 @@ async function resolveLatestRelease() {
     headers: { Accept: 'application/vnd.github+json' },
   });
   if (!response.ok) {
-    if (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0') {
-      const resetAt = new Date(Number(response.headers.get('x-ratelimit-reset')) * 1000);
+    if (
+      response.status === 403 &&
+      response.headers.get('x-ratelimit-remaining') === '0'
+    ) {
+      const resetAt = new Date(
+        Number(response.headers.get('x-ratelimit-reset')) * 1000
+      );
       throw new Error(
         `GitHub's unauthenticated API rate limit (60 req/hour, shared across everything on this ` +
           `network) is exhausted — resets at ${resetAt.toLocaleTimeString()}. This only happens on ` +
           `the very first run on a given machine (nothing to look up once a jar is cached); if it ` +
           `keeps happening, manually place a sonarlint-cli-*.jar from ` +
-          `https://github.com/pavel-zeman/sonarlint-cli/releases into ~/.sonar-local-cli/jar/.`,
+          `https://github.com/pavel-zeman/sonarlint-cli/releases into ~/.sonar-local-cli/jar/.`
       );
     }
-    throw new Error(`Failed to look up the latest sonarlint-cli release: HTTP ${response.status}`);
+    throw new Error(
+      `Failed to look up the latest sonarlint-cli release: HTTP ${response.status}`
+    );
   }
   const release = await response.json();
   const asset = release.assets?.find((a) => a.name.endsWith('.jar'));
   if (!asset) {
-    throw new Error(`No .jar asset found on sonarlint-cli release ${release.tag_name}.`);
+    throw new Error(
+      `No .jar asset found on sonarlint-cli release ${release.tag_name}.`
+    );
   }
-  return { version: release.tag_name, url: asset.browser_download_url, fileName: asset.name };
+  return {
+    version: release.tag_name,
+    url: asset.browser_download_url,
+    fileName: asset.name,
+  };
 }
 
 async function downloadToFile(url, destPath) {

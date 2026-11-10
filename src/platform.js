@@ -16,7 +16,9 @@ const ARCH_MAP = {
 export function adoptiumOs() {
   const mapped = OS_MAP[process.platform];
   if (!mapped) {
-    throw new Error(`Unsupported platform "${process.platform}" — sonar-local-cli supports Windows, macOS, and Linux.`);
+    throw new Error(
+      `Unsupported platform "${process.platform}" — sonar-local-cli supports Windows, macOS, and Linux.`
+    );
   }
   return mapped;
 }
@@ -24,7 +26,9 @@ export function adoptiumOs() {
 export function adoptiumArch() {
   const mapped = ARCH_MAP[process.arch];
   if (!mapped) {
-    throw new Error(`Unsupported architecture "${process.arch}" — sonar-local-cli supports x64 and arm64.`);
+    throw new Error(
+      `Unsupported architecture "${process.arch}" — sonar-local-cli supports x64 and arm64.`
+    );
   }
   return mapped;
 }

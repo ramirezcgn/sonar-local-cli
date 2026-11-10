@@ -45,13 +45,17 @@ export function parseInspections(output) {
 // Hotspots in 4176ms" — treated as the authoritative count (inspections.length only covers
 // CODE_SMELL/BUG/VULNERABILITY messages, not whatever message type Security Hotspots use).
 export function parseSummaryLine(output) {
-  const match = output.match(/Analysis detected (\d+) issues? and (\d+) Security Hotspots?/);
+  const match = output.match(
+    /Analysis detected (\d+) issues? and (\d+) Security Hotspots?/
+  );
   if (!match) return null;
   return { issues: Number(match[1]), securityHotspots: Number(match[2]) };
 }
 
 export function formatInspection(inspection) {
-  const location = inspection.line ? `${inspection.file}:${inspection.line}` : (inspection.file ?? '?');
+  const location = inspection.line
+    ? `${inspection.file}:${inspection.line}`
+    : (inspection.file ?? '?');
   const severity = (inspection.severity ?? '').padEnd(13);
   const rule = inspection.typeId ?? '?';
   return `${severity} ${location}  [${rule}]  ${inspection.message ?? ''}`;

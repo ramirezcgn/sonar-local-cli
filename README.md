@@ -21,7 +21,22 @@ real quality profile.
 This tool sidesteps all three: it's a thin wrapper that gets a real, Connected-Mode-synced
 local analysis with a single command, on any machine with Node ≥18.
 
-## Usage
+## Standalone mode (no token)
+
+Without a token (or with `--standalone`) it runs with the default rules and no server
+connection.
+
+```bash
+npx sonar-local-cli --sources backend/app,src   # default: current directory
+```
+
+On first run it downloads `sonarlint-language-server` and the JS/TS, PHP, Python, HTML and XML
+analyzers from Maven Central into `~/.sonar-local-cli/standalone` (pinned to the set shipped with
+SonarLint for VS Code 6.3.0). JS/TS analysis needs Node on the machine. `--properties` is read
+only for `sonar.sources`, `sonar.tests` and `sonar.projectBaseDir`; the project quality profile
+and exclusions need Connected Mode (token).
+
+## Usage (Connected Mode)
 
 ```bash
 npx sonar-local-cli \
