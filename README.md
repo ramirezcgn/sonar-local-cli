@@ -1,12 +1,10 @@
 # sonar-local-cli
 
-Run real SonarQube/SonarCloud **Connected Mode** analysis from the terminal — no Java
-pre-install, no Docker, no MCP server. On first run it downloads a portable JRE
-([Eclipse Temurin](https://adoptium.net)) and the analysis engine
-([`pavel-zeman/sonarlint-cli`](https://github.com/pavel-zeman/sonarlint-cli), which drives
-the same `sonarlint-core`/`sonarlint-language-server` engine the SonarLint IDE plugins use),
-caches both under `~/.sonar-local-cli`, then runs the analysis synced against your project's
-real quality profile.
+Run SonarQube/SonarCloud analysis from the terminal, **bound to your project** (Connected
+Mode) or with the default rules — no Java pre-install, no Docker, no MCP server. On first run
+it downloads a portable JRE ([Eclipse Temurin](https://adoptium.net)) and the SonarLint
+language server with its analyzers (from Maven Central), caches them under
+`~/.sonar-local-cli`, and drives the same engine the SonarLint IDE plugins use.
 
 ## Why
 
@@ -18,27 +16,22 @@ real quality profile.
   analysis via their tools can hit plan-tier restrictions (e.g. per-branch issue queries), and
   they depend on an MCP client + often Docker being set up and running.
 
-This tool sidesteps all three: it's a thin wrapper that gets a real, Connected-Mode-synced
-local analysis with a single command, on any machine with Node ≥18.
+This tool sidesteps all three: one command, on any machine with Node ≥21.7.
 
-## Standalone mode (no token)
+## Two modes
 
-Without a token (or with `--standalone`) it runs with the default rules and no server
-connection.
+- **Connected Mode** (a token is available): the project's real quality profile is applied.
+  The server is bound to your project (`--project`, `--org`, `--host`) and downloads its rules
+  before analyzing.
+- **Standalone** (no token, or `--standalone`): the default rules, no server connection.
 
-```bash
-npx sonar-local-cli --sources backend/app,src   # default: current directory
-```
-
-On first run it downloads `sonarlint-language-server` and the JS/TS, PHP, Python, HTML and XML
-analyzers from Maven Central into `~/.sonar-local-cli/standalone` (pinned to the set shipped with
-SonarLint for VS Code 6.3.0). JS/TS analysis needs Node on the machine. `--properties` is read
-only for `sonar.sources`, `sonar.tests` and `sonar.projectBaseDir`; the project quality profile
-and exclusions need Connected Mode (token).
-
-## Usage (Connected Mode)
+## Usage
 
 ```bash
+# Standalone: default rules
+npx sonar-local-cli --sources backend/app,src/index.ts   # default: current directory
+
+# Connected Mode
 npx sonar-local-cli \
   --token <your-sonarcloud-token> \
   --org <your-org-key> \
@@ -46,76 +39,91 @@ npx sonar-local-cli \
   --sources backend/app,src
 ```
 
-Or reuse an existing `sonar-project.properties`:
+`--sources` and `--tests` take **directories and single files**, relative to the current
+directory. An explicit `--sources` narrows the run: the `sonar.tests` of the properties file
+are left out unless you also pass `--tests`.
+
+### Using a `sonar-project.properties`
+
+If `--base-dir` (default: the current directory) contains a `sonar-project.properties`, it is
+picked up automatically, unless you pass `--project`. Use `--properties <path>` for another
+file. These keys are read: `sonar.sources`, `sonar.tests`, `sonar.exclusions`,
+`sonar.test.inclusions`, `sonar.projectBaseDir`, `sonar.projectKey`, `sonar.organization` and
+`sonar.host.url`. `--project`, `--org`, `--host`, `--sources` and `--tests` override the file.
 
 ```bash
-npx sonar-local-cli --token <your-token> --properties ./sonar-project.properties
+npx sonar-local-cli --token <your-token> --sources backend/app/SomeModule
 ```
 
-Combine `--properties` with `--sources`/`--tests` to narrow just those two settings for a fast,
-scoped run — everything else in the file (projectKey, exclusions, etc.) stays as-is:
+### Token and `.env`
 
-```bash
-npx sonar-local-cli --token <your-token> \
-  --properties ./sonar-project.properties \
-  --sources backend/app/SomeModule \
-  --tests backend/tests/SomeModule
-```
-
-### Avoiding a manual `--token`/`$SONAR_TOKEN` every time
-
-Drop a `.env` file (gitignored — never commit a real token) in the current directory:
+Drop a `.env` file (gitignored — never commit a real token) in `--base-dir`:
 
 ```
 SONAR_TOKEN=your-token-here
 SONAR_ORG=your-org-key
 ```
 
-It's picked up automatically — no flag needed. Point at a different file with `--env-file
-<path>`. Uses Node's built-in env-file loader, no extra dependency; requires Node ≥21.7.0 (still
-marked experimental upstream as of this writing, but functions normally).
+It's picked up automatically. Point at a different file with `--env-file <path>`. Variables
+already set in the environment win over the file. `--token` and `--org` override both.
 
-`--token` can also be set via `$SONAR_TOKEN`, `--org` via `$SONAR_ORG` — keeps the token out
-of shell history in CI or scripts.
+### A sub-project inside a monorepo
+
+Run from the sub-project and point `--base-dir` at the repository root, where the `.env` and
+the properties file live. Paths you type stay relative to where you are:
+
+```bash
+cd catalog && npx sonar-local-cli --base-dir .. --sources src
+```
 
 Run `npx sonar-local-cli --help` for the full flag list.
-
-**Note:** `--sources`/`--tests` (and the equivalent properties-file keys) must be directories,
-not individual file paths — that's a constraint of the underlying `sonarlint-cli` engine.
 
 ## What gets cached where
 
 ```
 ~/.sonar-local-cli/
-├── jre/21-<os>-<arch>/     # portable JRE, one-time download (~45MB)
-└── jar/sonarlint-cli-*.jar # the analysis engine, one-time download (~40MB)
+├── jre/21-<os>-<arch>/   # portable JRE, one-time download (~45MB)
+└── standalone/           # language server + analyzers (JS/TS, PHP, Python, HTML, XML), one-time
 ```
 
-Delete `~/.sonar-local-cli` any time to force a clean re-download.
+Delete `~/.sonar-local-cli` any time to force a clean re-download. The jars are pinned to the
+set shipped with SonarLint for VS Code 6.3.0, because the server and the analyzers must be
+mutually compatible. JS/TS analysis needs Node on the machine.
 
 ## Output
 
-By default, prints just the issues found — one line each (severity, `file:line`, rule, message)
-— plus a final count. The underlying engine's own startup/analyzer/rule-documentation logging
-(Java, Spring, TeamCity `##teamcity[...]` service messages) is suppressed.
+One line per issue — severity, `file:line`, rule, message — plus a final count:
 
 ```
 WARNING       pos/src/components/Foo.tsx:83  [typescript:S9011]  Add an explicit "type" attribute to this button.
-WEAK WARNING  pos/src/components/Foo.tsx:138  [typescript:S6759]  Mark the props of the component as read-only.
 
-2 issue(s), 0 security hotspot(s).
+1 issue(s) in 42/42 file(s).
 ```
 
-Pass `--verbose`/`-v` to stream the engine's raw output instead — useful for debugging something
-that isn't a lint finding. On a genuine failure (bad config, crash, etc.) the raw output is always
-shown, regardless of `--verbose`, since a filtered issue list isn't useful for debugging a crash.
+Pass `--verbose`/`-v` to stream the language server's own log.
 
-The process exit code reflects the underlying tool's own exit — a clean run and a run that found
-issues both exit `0`; only a real failure exits non-zero.
+Exit codes: `0` when the analysis ran (issues or not), `2` when an issue matches
+`--fail-on <level>` (e.g. a pre-commit hook), `1` on a real failure (bad config, connection
+error). Levels, most to least severe: `error`, `warning`, `weak-warning`, `info`. `--fail-on
+warning` fails on errors and warnings but tolerates the rest; `--fail-on-issues` is shorthand
+for `--fail-on any`.
+
+## Development
+
+```bash
+npm test                          # unit tests, no network, no Java
+SONAR_LOCAL_E2E=1 npm test        # also runs one real standalone analysis (downloads the JRE and jars)
+npm run format:check
+```
+
+The unit tests drive the whole analysis flow against a fake language server
+(`test/fixtures/fake-server.mjs`), so the connection, sync and token handling are covered
+without a SonarCloud account. A real Connected Mode run needs a token, e.g.
+`npx sonar-local-cli --base-dir <repo> --sources <dir>`.
 
 ## License
 
-MIT for this wrapper. It downloads and invokes `pavel-zeman/sonarlint-cli` (LGPL-3.0) and
-Eclipse Temurin (GPLv2 with the Classpath Exception) as separate, unmodified external
-processes/binaries fetched fresh from their own official sources at run time — never bundled
-or redistributed inside this package.
+MIT for this wrapper. It downloads and invokes Eclipse Temurin, the SonarLint language server
+and the SonarSource analyzers as separate, unmodified external binaries fetched at run time
+from their own official sources (Adoptium, Maven Central), each under its own license — never
+bundled or redistributed inside this package.

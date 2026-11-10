@@ -1,15 +1,23 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  readdir,
+  readFile,
+  rename,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { cacheDir } from './platform.js';
 
-// Standalone mode drives sonarlint-language-server (the same LSP server the VS Code extension
-// launches) with the default rules and no server connection. The set below is pinned because the
-// server and the analyzer plugins must be mutually compatible; it is the one shipped by
-// SonarLint for VS Code 6.3.0. Jars come from Maven Central, never bundled in this package.
+// Drives sonarlint-language-server (the same LSP server the VS Code extension launches), either
+// with the default rules or bound to a SonarQube Cloud/Server project to use its quality profile.
+// The jars below are pinned because the server and the analyzer plugins must be mutually
+// compatible; it is the set shipped by SonarLint for VS Code 6.3.0. They come from Maven Central,
+// never bundled in this package.
 const MAVEN = 'https://repo1.maven.org/maven2';
 const SERVER = {
   group: 'org.sonarsource.sonarlint.ls',
@@ -56,6 +64,7 @@ const LANGUAGES = {
   '.py': 'python',
   '.html': 'html',
   '.xml': 'xml',
+  '.css': 'css',
 };
 const SKIPPED_DIRS = new Set([
   'node_modules',
@@ -68,6 +77,7 @@ const SKIPPED_DIRS = new Set([
 ]);
 const SEVERITIES = { 1: 'ERROR', 2: 'WARNING', 3: 'WEAK WARNING', 4: 'INFO' };
 const QUIET_MS = 3000;
+const POLL_MS = 100;
 const TIMEOUT_MS = 10 * 60 * 1000;
 
 const jarName = ({ artifact, version }) => `${artifact}-${version}.jar`;
@@ -86,7 +96,7 @@ async function ensureFile(dep, dir, log) {
   return dest;
 }
 
-export async function ensureStandaloneJars({ log = () => {} } = {}) {
+export async function ensureEngineJars({ log = () => {} } = {}) {
   const dir = path.join(cacheDir(), 'standalone');
   await mkdir(dir, { recursive: true });
   const [server, ...analyzers] = await Promise.all(
@@ -108,13 +118,52 @@ async function walk(dir, out) {
   );
 }
 
-export async function collectFiles(baseDir, dirs) {
-  const files = [];
-  await Promise.all(dirs.map((dir) => walk(path.resolve(baseDir, dir), files)));
-  return [...new Set(files)];
+// Sonar patterns: ** crosses directories, * and ? stay within one path segment.
+export function globToRegExp(glob) {
+  let re = '';
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === '*' && glob[i + 1] === '*') {
+      const slash = glob[i + 2] === '/';
+      re += slash ? '(?:.*/)?' : '.*';
+      i += slash ? 2 : 1;
+    } else if (c === '*') {
+      re += '[^/]*';
+    } else if (c === '?') {
+      re += '[^/]';
+    } else {
+      re += c.replaceAll(/[.+^${}()|[\]\\]/g, String.raw`\$&`);
+    }
+  }
+  return new RegExp(`^${re}$`);
 }
 
-function parseMessages(onMessage) {
+async function collectInto(target, out) {
+  let stats;
+  try {
+    stats = await stat(target);
+  } catch {
+    throw new Error(`Path not found: ${target}`);
+  }
+  if (stats.isDirectory()) await walk(target, out);
+  else if (LANGUAGES[path.extname(target)]) out.push(target);
+}
+
+// `paths` may mix directories and single files; `exclusions` are sonar.exclusions globs relative
+// to baseDir.
+export async function collectFiles(baseDir, paths, exclusions = []) {
+  const found = [];
+  await Promise.all(
+    paths.map((p) => collectInto(path.resolve(baseDir, p), found))
+  );
+  const excluded = exclusions.map(globToRegExp);
+  const relative = (file) => path.relative(baseDir, file).replaceAll('\\', '/');
+  return [...new Set(found)].filter(
+    (file) => !excluded.some((re) => re.test(relative(file)))
+  );
+}
+
+export function parseMessages(onMessage) {
   let buf = Buffer.alloc(0);
   return (chunk) => {
     buf = Buffer.concat([buf, chunk]);
@@ -135,35 +184,106 @@ function parseMessages(onMessage) {
   };
 }
 
-// Answers the few client-side requests the server blocks on; without isOpenInEditor and
-// listFilesInFolder it never starts analyzing.
-function replyTo(msg) {
+const CONNECTION_ID = 'sonar-local';
+// Last step the server logs when it binds a project: the analyzer configuration is in place.
+const SYNC_DONE_RE = /Synchronizing project branches/;
+const SYNC_TIMEOUT_MS = 3 * 60 * 1000;
+const CLOUD_REGIONS = [
+  [/sonarqube\.us/, 'US'],
+  [/sonarcloud\.io/, 'EU'],
+];
+
+// Settings the server reads through workspace/configuration (section "sonarlint"): the connection
+// and the project binding that makes it use the project's quality profile.
+export function connectionSettings({ host, org, project, token }) {
+  const cloudRegion = CLOUD_REGIONS.find(([re]) => re.test(host))?.[1];
+  const connections = cloudRegion
+    ? {
+        sonarcloud: [
+          {
+            connectionId: CONNECTION_ID,
+            organizationKey: org,
+            region: cloudRegion,
+            token,
+            disableNotifications: true,
+          },
+        ],
+        sonarqube: [],
+      }
+    : {
+        sonarcloud: [],
+        sonarqube: [
+          {
+            connectionId: CONNECTION_ID,
+            serverUrl: host,
+            token,
+            disableNotifications: true,
+          },
+        ],
+      };
+  return {
+    token,
+    connections,
+    settings: {
+      connectedMode: {
+        connections,
+        project: { connectionId: CONNECTION_ID, projectKey: project },
+      },
+      rules: {},
+    },
+  };
+}
+
+// Answers the client-side requests the server blocks on: without isOpenInEditor and
+// listFilesInFolder it never starts analyzing; getTokenForServer is how it asks for the token.
+export function replyTo(msg, connection, testFilePattern = '') {
   switch (msg.method) {
     case 'workspace/configuration':
-      return msg.params.items.map(() => ({}));
+      return msg.params.items.map((item) =>
+        item.section === 'sonarlint'
+          ? { rules: {}, ...connection?.settings, testFilePattern }
+          : {}
+      );
     case 'sonarlint/isOpenInEditor':
       return true;
     case 'sonarlint/listFilesInFolder':
       return { foundFiles: [] };
+    case 'sonarlint/getTokenForServer':
+      return connection?.token ?? null;
     default:
       return null;
   }
 }
 
-export async function analyzeStandalone({
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function waitUntil(predicate, deadline, pollMs) {
+  while (!predicate() && Date.now() < deadline) await sleep(pollMs);
+}
+
+// connection (optional): result of connectionSettings(); without it the default rules apply.
+const launchServer = (javaBinary, jars) =>
+  spawn(
+    javaBinary,
+    ['-jar', jars.server, '-stdio', '-analyzers', ...jars.analyzers],
+    { stdio: ['pipe', 'pipe', 'pipe'] }
+  );
+
+// `launch` and `quietMs` exist so tests can use a fake language server and short waits.
+export async function analyze({
   javaBinary,
   jars,
   baseDir,
   files,
+  connection,
+  testFilePattern,
   verbose = false,
+  launch = launchServer,
+  quietMs = QUIET_MS,
 }) {
-  const child = spawn(
-    javaBinary,
-    ['-jar', jars.server, '-stdio', '-analyzers', ...jars.analyzers],
-    {
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }
-  );
+  const child = launch(javaBinary, jars);
+  // Never leave the java process behind, whatever makes this run fail.
+  process.once('exit', () => child.kill());
   if (verbose) child.stderr.pipe(process.stderr);
   else child.stderr.resume();
 
@@ -176,6 +296,8 @@ export async function analyzeStandalone({
   const uris = new Map(files.map((file) => [pathToFileURL(file).href, file]));
   const diagnostics = new Map();
   let lastActivity = Date.now();
+  let syncDone = false;
+  let connectionCheck = null;
   const activeProgress = new Set();
   let progressSeen = false;
   let resolveInit;
@@ -186,9 +308,11 @@ export async function analyzeStandalone({
     parseMessages((msg) => {
       lastActivity = Date.now();
       if (msg.method && msg.id !== undefined) {
-        send({ id: msg.id, result: replyTo(msg) });
+        send({ id: msg.id, result: replyTo(msg, connection, testFilePattern) });
       } else if (msg.method === 'textDocument/publishDiagnostics') {
         diagnostics.set(msg.params.uri, msg.params.diagnostics);
+      } else if (msg.method === 'sonarlint/reportConnectionCheckResult') {
+        connectionCheck = msg.params;
       } else if (msg.method === '$/progress') {
         const { kind } = msg.params.value;
         if (kind === 'begin') {
@@ -197,8 +321,9 @@ export async function analyzeStandalone({
         } else if (kind === 'end') {
           activeProgress.delete(msg.params.token);
         }
-      } else if (msg.method === 'window/logMessage' && verbose) {
-        process.stderr.write(`${msg.params.message}\n`);
+      } else if (msg.method === 'window/logMessage') {
+        if (SYNC_DONE_RE.test(msg.params.message)) syncDone = true;
+        if (verbose) process.stderr.write(`${msg.params.message}\n`);
       } else if (msg.id === 1) {
         resolveInit(msg);
       }
@@ -224,7 +349,10 @@ export async function analyzeStandalone({
         platform: process.platform,
         architecture: process.arch,
         clientNodePath: process.execPath,
-        connections: { sonarqube: [], sonarcloud: [] },
+        connections: connection?.connections ?? {
+          sonarqube: [],
+          sonarcloud: [],
+        },
         rules: {},
         automaticAnalysis: true,
         disableTelemetry: true,
@@ -233,6 +361,19 @@ export async function analyzeStandalone({
   });
   await initialized;
   send({ method: 'initialized', params: {} });
+
+  if (connection) {
+    // Opening files before the quality profile is synced would analyze them with default rules.
+    const syncDeadline = Date.now() + SYNC_TIMEOUT_MS;
+    await waitUntil(() => connectionCheck, syncDeadline, POLL_MS);
+    if (!connectionCheck?.success) {
+      child.kill();
+      throw new Error(
+        'Could not connect to the server: check the token, organization and host.'
+      );
+    }
+    await waitUntil(() => syncDone, syncDeadline, POLL_MS);
+  }
 
   await Promise.all(
     [...uris].map(async ([uri, file]) => {
@@ -252,16 +393,16 @@ export async function analyzeStandalone({
   );
 
   // The server has no "analysis finished" signal: done once every file has published, an
-  // analysis progress has started and all have ended, and the stream has been quiet for QUIET_MS.
-  const deadline = Date.now() + TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    const settled =
+  // analysis progress has started and all have ended, and the stream has been quiet for quietMs.
+  await waitUntil(
+    () =>
+      diagnostics.size >= uris.size &&
       progressSeen &&
       activeProgress.size === 0 &&
-      Date.now() - lastActivity > QUIET_MS;
-    if (diagnostics.size >= uris.size && settled) break;
-  }
+      Date.now() - lastActivity > quietMs,
+    Date.now() + TIMEOUT_MS,
+    POLL_MS
+  );
   child.kill();
 
   const issues = [];
