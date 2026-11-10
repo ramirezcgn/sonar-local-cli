@@ -2,8 +2,15 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-const OVERRIDABLE_KEYS = ['sonar.sources', 'sonar.tests'];
-const SCOPE_KEYS = new Set([...OVERRIDABLE_KEYS, 'sonar.projectBaseDir']);
+const OVERRIDABLE_KEYS = [
+  'sonar.sources',
+  'sonar.tests',
+  'sonar.projectBaseDir',
+];
+const SCOPE_KEYS = new Set(OVERRIDABLE_KEYS);
+
+// Backslashes are escape characters in .properties files, so Windows paths must use forward slashes.
+const toPropertiesPath = (value) => value.replaceAll('\\', '/');
 
 async function tempPropertiesFile(content) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'sonar-local-cli-'));
@@ -16,7 +23,7 @@ async function tempPropertiesFile(content) {
   };
 }
 
-// Replaces (or appends) sonar.sources/sonar.tests lines in an existing properties file's content,
+// Replaces (or appends) the overridable sonar.* lines in an existing properties file's content,
 // leaving every other line — including comments and formatting — untouched. Lets --sources/--tests
 // narrow the scope of a full project's tracked properties file for a fast, targeted run without
 // hand-writing a whole separate file each time.
@@ -69,6 +76,9 @@ export async function resolvePropertiesFile(options) {
     const overrides = {};
     if (options.sources) overrides['sonar.sources'] = options.sources;
     if (options.tests) overrides['sonar.tests'] = options.tests;
+    // The engine resolves relative paths against its cwd, so an explicit base dir must be written.
+    if (options.baseDir)
+      overrides['sonar.projectBaseDir'] = toPropertiesPath(options.baseDir);
 
     if (Object.keys(overrides).length === 0) {
       return { path: options.properties, cleanup: async () => {} };
@@ -91,7 +101,7 @@ export async function resolvePropertiesFile(options) {
     `sonar.projectKey=${options.project}`,
     `sonar.organization=${options.org}`,
     `sonar.host.url=${options.host ?? 'https://sonarcloud.io'}`,
-    `sonar.projectBaseDir=${options.baseDir ?? process.cwd()}`,
+    `sonar.projectBaseDir=${toPropertiesPath(options.baseDir ?? process.cwd())}`,
     `sonar.sources=${options.sources}`,
   ];
   if (options.tests) {

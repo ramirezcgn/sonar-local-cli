@@ -51,9 +51,11 @@ Options:
                           run (everything else in the file — projectKey, exclusions, etc.
                           — stays as-is) instead of replacing the whole config.
   --tests <dirs>          Comma-separated test directories, same rule as --sources.
-  --base-dir <path>       Project root. Relative --sources, --tests, --properties and --env-file
-                          (default: .env) resolve against it. Default: current directory
-                          (standalone with --properties: that file's directory).
+  --base-dir <path>       Project root, and where .env and sonar-project.properties are looked
+                          up when not given explicitly. All explicit paths (--sources, --tests,
+                          --properties, --env-file) are relative to the current directory.
+                          Default: current directory (standalone with --properties: that
+                          file's directory).
   --properties <path>     Default: sonar-project.properties in --base-dir, if it exists and
                           --project is not given. Use an existing sonar-project.properties file instead of
                           --org/--project/--sources/--tests.
@@ -196,6 +198,13 @@ const splitList = (value) =>
     .map((s) => s.trim())
     .filter(Boolean);
 
+// The engine resolves sources against sonar.projectBaseDir, so absolute CLI paths become base-relative.
+const relativeTo = (root, value) =>
+  value &&
+  splitList(value)
+    .map((s) => path.relative(root, s).replaceAll('\\', '/') || '.')
+    .join(',');
+
 async function main() {
   const { values } = parseArgs({
     options: {
@@ -219,17 +228,27 @@ async function main() {
     return 0;
   }
 
-  // --base-dir is also where .env and --properties are looked up (relative paths resolve against it).
+  // Explicit path flags are relative to the cwd; --base-dir is the project root and the default
+  // place to look for .env and sonar-project.properties.
   const root = path.resolve(values['base-dir'] ?? '.');
+  for (const key of ['sources', 'tests']) {
+    if (values[key]) {
+      values[key] = splitList(values[key])
+        .map((s) => path.resolve(s))
+        .join(',');
+    }
+  }
   if (values.properties) {
-    values.properties = path.resolve(root, values.properties);
+    values.properties = path.resolve(values.properties);
   } else if (!values.project) {
     // No explicit config: pick up the project's own file from the base dir.
     const detected = path.join(root, 'sonar-project.properties');
     if (existsSync(detected)) values.properties = detected;
   }
   loadEnvFile(
-    path.resolve(root, values['env-file'] ?? '.env'),
+    values['env-file']
+      ? path.resolve(values['env-file'])
+      : path.join(root, '.env'),
     Boolean(values['env-file'])
   );
 
@@ -252,9 +271,9 @@ async function main() {
     org,
     host: values.host,
     project: values.project,
-    sources: values.sources,
-    tests: values.tests,
-    baseDir: root,
+    sources: relativeTo(root, values.sources),
+    tests: relativeTo(root, values.tests),
+    baseDir: values['base-dir'] ? root : undefined,
   });
 
   try {
