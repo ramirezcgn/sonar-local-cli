@@ -57,7 +57,7 @@ async function extractArchive(archivePath, destDir) {
 
 // Adoptium archives extract to a single top-level dir whose name embeds the exact build
 // (e.g. "jdk-21.0.12+8-jre") — that suffix isn't predictable ahead of time, so find it.
-async function findJavaBinary(extractedRoot) {
+export async function findJavaBinary(extractedRoot) {
   const entries = await readdir(extractedRoot, { withFileTypes: true });
   const topLevelDir = entries.find((entry) => entry.isDirectory());
   if (!topLevelDir) {
@@ -66,7 +66,12 @@ async function findJavaBinary(extractedRoot) {
     );
   }
   const binaryName = isWindows() ? 'java.exe' : 'java';
-  return path.join(extractedRoot, topLevelDir.name, 'bin', binaryName);
+  const jreRoot = path.join(extractedRoot, topLevelDir.name);
+  // macOS Temurin archives are bundles: the JRE lives under Contents/Home.
+  const macBinary = path.join(jreRoot, 'Contents', 'Home', 'bin', binaryName);
+  return fs.existsSync(macBinary)
+    ? macBinary
+    : path.join(jreRoot, 'bin', binaryName);
 }
 
 export async function ensureJre({ log = () => {} } = {}) {
